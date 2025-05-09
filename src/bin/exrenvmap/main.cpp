@@ -14,6 +14,12 @@
 #include <ImfHeader.h>
 #include <ImfMisc.h>
 #include <OpenEXRConfig.h>
+#include <ImfChannelList.h>
+#include <ImfRgbaFile.h>
+#include <ImfTiledRgbaFile.h>
+#include <ImfStandardAttributes.h>
+#include <ImfOutputFile.h>
+#include <ImfTiledOutputFile.h>
 
 #include <blurImage.h>
 #include <makeCubeMap.h>
@@ -25,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <cmath>
 
 #include "namespaceAlias.h"
 using namespace IMF;
@@ -85,6 +92,9 @@ usageMessage (ostream& stream, const char* program_name, bool verbose = false)
                "                longitude environment map, regardless of its\n"
                "                envmap attribute (-li has no effect if the\n"
                "                input image is assembled from multiple files)\n"
+               "\n"
+               "  -f32, --float output pixels will be 32-bit floating-point\n"
+               "                values (default is 16-bit half float)\n"
                "\n"
                "  -w x          sets the width of the output image to x pixels\n"
                "                (default is 256).  The height of the output image\n"
@@ -156,6 +166,132 @@ getCompression (const string& str)
 
 } // namespace
 
+// Add forward declarations for the missing functions
+void blurCubeMap(EnvmapImage& image, bool verbose);
+void blurLatLongMap(EnvmapImage& image, bool verbose);
+void resampleImage(const EnvmapImage& in, EnvmapImage& out, int level);
+
+// Helper function to handle extreme values when converting to float
+float convertRgbaValueToFloat(float value, float* maxValueFound, int* extremeValueCount) {
+    // Check for NaN/Infinity
+    if (value != value || !std::isfinite(value)) {
+        (*extremeValueCount)++;
+        return 0.0f;
+    }
+    
+    // Keep track of maximum value for reporting
+    if (value > *maxValueFound) {
+        *maxValueFound = value;
+    }
+    
+    // Check for extreme values
+    const float safeMaxValue = 1.0e30f;
+    if (value > safeMaxValue) {
+        (*extremeValueCount)++;
+        return safeMaxValue;
+    }
+    
+    if (value < -safeMaxValue) {
+        (*extremeValueCount)++;
+        return -safeMaxValue;
+    }
+    
+    return value;
+}
+
+// Function to report extreme values if found
+void reportExtremeValues(int extremeValueCount, float maxValueFound, bool verbose) {
+    if (extremeValueCount > 0 && verbose) {
+        std::cout << "Warning: " << extremeValueCount 
+                  << " extreme values found during final output. "
+                  << "Maximum value: " << maxValueFound << std::endl;
+        std::cout << "Some artifacts may still be visible in very bright areas." << std::endl;
+    }
+}
+
+// The implementations should be before the main function
+
+void
+blurCubeMap(EnvmapImage& image, bool verbose)
+{
+    if (verbose)
+        cout << "blurring cube-face map" << endl;
+    
+    blurImage(image, verbose);
+}
+
+void
+blurLatLongMap(EnvmapImage& image, bool verbose)
+{
+    if (verbose)
+        cout << "blurring latitude-longitude map" << endl;
+    
+    blurImage(image, verbose);
+}
+
+void
+resampleImage(const EnvmapImage& in, EnvmapImage& out, int level)
+{
+    // Simple implementation to resample the environment map for mipmapping
+    const IMATH::Box2i& inDw = in.dataWindow();
+    const IMATH::Box2i& outDw = out.dataWindow();
+    
+    int inW = inDw.max.x - inDw.min.x + 1;
+    int inH = inDw.max.y - inDw.min.y + 1;
+    int outW = outDw.max.x - outDw.min.x + 1;
+    int outH = outDw.max.y - outDw.min.y + 1;
+    
+    const IMF::Array2D<IMF::Rgba>& inPixels = in.pixels();
+    IMF::Array2D<IMF::Rgba>& outPixels = out.pixels();
+    
+    // Scale factors for x and y
+    float xScale = float(inW) / float(outW);
+    float yScale = float(inH) / float(outH);
+    
+    for (int y = 0; y < outH; ++y)
+    {
+        for (int x = 0; x < outW; ++x)
+        {
+            // Calculate source pixel position
+            float srcX = (x + 0.5f) * xScale - 0.5f;
+            float srcY = (y + 0.5f) * yScale - 0.5f;
+            
+            // Simple bilinear interpolation
+            int x0 = floor(srcX);
+            int y0 = floor(srcY);
+            int x1 = x0 + 1;
+            int y1 = y0 + 1;
+            
+            float wx = srcX - x0;
+            float wy = srcY - y0;
+            
+            // Clamp to edges
+            x0 = std::max(0, std::min(x0, inW - 1));
+            y0 = std::max(0, std::min(y0, inH - 1));
+            x1 = std::max(0, std::min(x1, inW - 1));
+            y1 = std::max(0, std::min(y1, inH - 1));
+            
+            // Sample the four nearest pixels
+            IMF::Rgba p00 = inPixels[y0][x0];
+            IMF::Rgba p01 = inPixels[y0][x1];
+            IMF::Rgba p10 = inPixels[y1][x0];
+            IMF::Rgba p11 = inPixels[y1][x1];
+            
+            // Bilinear interpolation
+            float w00 = (1 - wx) * (1 - wy);
+            float w01 = wx * (1 - wy);
+            float w10 = (1 - wx) * wy;
+            float w11 = wx * wy;
+            
+            IMF::Rgba& p = outPixels[y][x];
+            p.r = p00.r * w00 + p01.r * w01 + p10.r * w10 + p11.r * w11;
+            p.g = p00.g * w00 + p01.g * w01 + p10.g * w10 + p11.g * w11;
+            p.b = p00.b * w00 + p01.b * w01 + p10.b * w10 + p11.b * w11;
+            p.a = p00.a * w00 + p01.a * w01 + p10.a * w10 + p11.a * w11;
+        }
+    }
+}
+
 int
 main (int argc, char** argv)
 {
@@ -175,6 +311,7 @@ main (int argc, char** argv)
     int               numSamples        = 5;
     bool              diffuseBlur       = false;
     bool              verbose           = false;
+    EnvmapPixelType   pixelType         = ENVMAP_HALF;
 
     //
     // Parse the command line.
@@ -244,6 +381,15 @@ main (int argc, char** argv)
                 //
 
                 overrideInputType = ENVMAP_LATLONG;
+                i += 1;
+            }
+            else if (!strcmp (argv[i], "-f32") || !strcmp (argv[i], "--float"))
+            {
+                //
+                // Use 32-bit float pixels
+                //
+
+                pixelType = ENVMAP_FLOAT;
                 i += 1;
             }
             else if (!strcmp (argv[i], "-w"))
@@ -416,11 +562,11 @@ main (int argc, char** argv)
         }
 
         //
-        // Load inFile, convert it, and save the result in outFile.
+        // Read the input image.
         //
 
-        EnvmapImage  image;
-        Header       header;
+        EnvmapImage image;
+        Header      header;
         RgbaChannels channels;
 
         readInputImage (
@@ -431,48 +577,442 @@ main (int argc, char** argv)
             verbose,
             image,
             header,
-            channels);
+            channels,
+            pixelType);
 
-        if (diffuseBlur) blurImage (image, verbose);
+        if (verbose) cout << "converting map format" << endl;
 
-        if (type == ENVMAP_CUBE)
+        //
+        // If necessary convert the map from latitude-longitude
+        // to cube face format, or vice versa.
+        //
+
+        EnvmapImage converted;
+
+        if (image.type() == type)
         {
+            // Instead of assignment, resize with same parameters and copy pixels
+            converted.resize(image.type(), image.dataWindow(), image.pixelType());
+            
+            // Copy pixels manually
+            int w = image.dataWindow().max.x - image.dataWindow().min.x + 1;
+            int h = image.dataWindow().max.y - image.dataWindow().min.y + 1;
+            
+            for (int y = 0; y < h; ++y)
+            {
+                for (int x = 0; x < w; ++x)
+                {
+                    converted.pixels()[y][x] = image.pixels()[y][x];
+                }
+            }
+        }
+        else if (image.type() == ENVMAP_LATLONG && type == ENVMAP_CUBE)
+        {
+            IMATH::Box2i dw (
+                IMATH::V2i (0, 0), IMATH::V2i (mapWidth - 1, mapWidth * 6 - 1));
+
+            converted.resize (ENVMAP_CUBE, dw, pixelType);
+
             makeCubeMap (
-                image,
-                header,
-                channels,
-                outFile,
-                tileWidth,
-                tileHeight,
-                levelMode,
-                roundingMode,
-                compression,
-                mapWidth,
-                filterRadius,
-                numSamples,
-                verbose);
+                image, converted, filterRadius, numSamples, verbose);
+            
+            if (diffuseBlur)
+                blurCubeMap (converted, verbose);
+        }
+        else // image.type() == ENVMAP_CUBE && type == ENVMAP_LATLONG
+        {
+            IMATH::Box2i dw (
+                IMATH::V2i (0, 0), IMATH::V2i (mapWidth - 1, mapWidth / 2 - 1));
+
+            converted.resize (ENVMAP_LATLONG, dw, pixelType);
+
+            makeLatLongMap (
+                image, converted, filterRadius, numSamples, verbose);
+            
+            if (diffuseBlur)
+                blurLatLongMap (converted, verbose);
+        }
+
+        //
+        // Set up header attributes for the output file
+        //
+
+        if (verbose) cout << "writing file " << outFile << endl;
+
+        addEnvmap (header, type);
+
+        header.dataWindow() = converted.dataWindow();
+        header.displayWindow() = converted.dataWindow();
+
+        header.compression() = compression;
+
+        if (levelMode != ONE_LEVEL)
+            header.setTileDescription(
+                TileDescription(
+                    tileWidth, tileHeight, levelMode, roundingMode));
+        
+        // Set channel type based on pixel type
+        if (pixelType == ENVMAP_FLOAT)
+        {
+            // For 32-bit float output, adjust channels
+            IMF::ChannelList chanList;
+            chanList.insert("R", IMF::Channel(IMF::FLOAT));
+            chanList.insert("G", IMF::Channel(IMF::FLOAT));
+            chanList.insert("B", IMF::Channel(IMF::FLOAT));
+            chanList.insert("A", IMF::Channel(IMF::FLOAT));
+            header.channels() = chanList;
+        }
+
+        if (strcmp (outFile, inFile) == 0)
+        {
+            //
+            // The input and output files have the same name.
+            // Preserve the input file's compression type and
+            // line order.
+            //
+
+            IMF::RgbaInputFile in (inFile);
+            header.compression() = in.compression();
+            header.lineOrder() = in.lineOrder();
+        }
+
+        //
+        // If we are writing a tiled file, the data window must
+        // contain the point (0, 0).  Adjust the data window if
+        // necessary.
+        //
+
+        const IMATH::Box2i& dwi = converted.dataWindow();
+
+        if (levelMode != ONE_LEVEL && (dwi.min.x > 0 || dwi.min.y > 0))
+        {
+            converted.resize(
+                converted.type(), IMATH::Box2i(IMATH::V2i(0, 0), dwi.max - dwi.min), converted.pixelType());
+        }
+
+        //
+        // Write the output file.
+        //
+
+        const char* f = outFile;
+        const IMATH::Box2i& dw = converted.dataWindow();
+        int w = dw.max.x - dw.min.x + 1;
+        int h = dw.max.y - dw.min.y + 1;
+
+        if (type == ENVMAP_CUBE &&
+            strchr(outFile, '%') &&
+            h == 6 * w &&
+            dw.min.x == 0 &&
+            dw.min.y == 0 &&
+            levelMode == ONE_LEVEL)
+        {
+            //
+            // Special case - we are writing a cube-face map,
+            // the output file name contains a '%' character,
+            // and the image is not a mipmap or ripmap.
+            // Write six separate image files, one for each
+            // cube face.
+            //
+
+            static const char* faceName[] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
+
+            size_t pos = strchr (outFile, '%') - outFile;
+            static const char face[] = {'x', 'x', 'y', 'y', 'z', 'z'};
+            static const int  dirs[] = { 0,  1,  2,  3,  4,  5};
+
+            float maxValueFound = 0.0f;
+            int extremeValueCount = 0;
+
+            for (int i = 0; i < 6; ++i)
+            {
+                string name = string(outFile).replace(pos, 1, faceName[i]);
+
+                IMATH::Box2i dw2(IMATH::V2i(0, 0), IMATH::V2i(w - 1, w - 1));
+                header.dataWindow() = dw2;
+                header.displayWindow() = dw2;
+                envmap(header) = ENVMAP_CUBE;
+                
+                // Create a CubeMapFace enum value based on the direction
+                CubeMapFace faceEnum;
+                
+                switch (i) {
+                    case 0: faceEnum = CUBEFACE_POS_X; break;
+                    case 1: faceEnum = CUBEFACE_NEG_X; break;
+                    case 2: faceEnum = CUBEFACE_POS_Y; break;
+                    case 3: faceEnum = CUBEFACE_NEG_Y; break;
+                    case 4: faceEnum = CUBEFACE_POS_Z; break;
+                    case 5: faceEnum = CUBEFACE_NEG_Z; break;
+                    default: throw invalid_argument("Invalid cube face index");
+                }
+                
+                // Use the setEnvmap function from ImfStandardAttributes.h
+                envmap(header) = ENVMAP_CUBE;
+                
+                // Set a custom attribute for the face directly
+                StringAttribute faceAttr;
+                switch (faceEnum) {
+                    case CUBEFACE_POS_X: faceAttr.value() = "+X"; break;
+                    case CUBEFACE_NEG_X: faceAttr.value() = "-X"; break;
+                    case CUBEFACE_POS_Y: faceAttr.value() = "+Y"; break;
+                    case CUBEFACE_NEG_Y: faceAttr.value() = "-Y"; break;
+                    case CUBEFACE_POS_Z: faceAttr.value() = "+Z"; break;
+                    case CUBEFACE_NEG_Z: faceAttr.value() = "-Z"; break;
+                }
+                header.insert("envmapFace", faceAttr);
+
+                if (pixelType == ENVMAP_FLOAT) {
+                    // Create an OutputFile to directly write float pixels
+                    Header faceHeader = header;
+                    faceHeader.channels() = IMF::ChannelList();
+                    faceHeader.channels().insert("R", IMF::Channel(IMF::FLOAT));
+                    faceHeader.channels().insert("G", IMF::Channel(IMF::FLOAT));
+                    faceHeader.channels().insert("B", IMF::Channel(IMF::FLOAT));
+                    faceHeader.channels().insert("A", IMF::Channel(IMF::FLOAT));
+                    
+                    IMF::OutputFile outFile(name.c_str(), faceHeader);
+                    
+                    // Convert Rgba pixels to separate float channels
+                    IMF::FrameBuffer frameBuffer;
+                    
+                    // Allocate temporary buffers for the float data
+                    Array2D<float> rBuffer(w, w);
+                    Array2D<float> gBuffer(w, w);
+                    Array2D<float> bBuffer(w, w);
+                    Array2D<float> aBuffer(w, w);
+                    
+                    // Copy data from Rgba pixels to float buffers
+                    const Rgba* pixels = &converted.pixels()[i * w][0];
+                    for (int y = 0; y < w; ++y) {
+                        for (int x = 0; x < w; ++x) {
+                            const Rgba& p = pixels[y * w + x];
+                            // Convert to float and check for extreme values
+                            float r = convertRgbaValueToFloat(float(p.r), &maxValueFound, &extremeValueCount);
+                            float g = convertRgbaValueToFloat(float(p.g), &maxValueFound, &extremeValueCount);
+                            float b = convertRgbaValueToFloat(float(p.b), &maxValueFound, &extremeValueCount);
+                            float a = float(p.a);
+                            
+                            // Alpha is handled separately since it's only 0-1 range
+                            if (a != a || !std::isfinite(a) || a > 1.0f) a = 1.0f;
+                            if (a < 0.0f) a = 0.0f;
+                            
+                            rBuffer[y][x] = r;
+                            gBuffer[y][x] = g;
+                            bBuffer[y][x] = b;
+                            aBuffer[y][x] = a;
+                        }
+                    }
+                    
+                    // Set up the framebuffer
+                    frameBuffer.insert("R", Slice(IMF::FLOAT, (char*)&rBuffer[0][0], sizeof(float), w * sizeof(float)));
+                    frameBuffer.insert("G", Slice(IMF::FLOAT, (char*)&gBuffer[0][0], sizeof(float), w * sizeof(float)));
+                    frameBuffer.insert("B", Slice(IMF::FLOAT, (char*)&bBuffer[0][0], sizeof(float), w * sizeof(float)));
+                    frameBuffer.insert("A", Slice(IMF::FLOAT, (char*)&aBuffer[0][0], sizeof(float), w * sizeof(float)));
+                    
+                    outFile.setFrameBuffer(frameBuffer);
+                    outFile.writePixels(w);
+                } else {
+                    // Use RgbaOutputFile for half-float pixels (standard approach)
+                    IMF::RgbaOutputFile out(name.c_str(), header, channels);
+                    out.setFrameBuffer(&converted.pixels()[i * w][0], 1, w);
+                    out.writePixels(w);
+                }
+            }
+
+            // After conversion is complete, report any issues found
+            reportExtremeValues(extremeValueCount, maxValueFound, verbose);
         }
         else
         {
-            makeLatLongMap (
-                image,
-                header,
-                channels,
-                outFile,
-                tileWidth,
-                tileHeight,
-                levelMode,
-                roundingMode,
-                compression,
-                mapWidth,
-                filterRadius,
-                numSamples,
-                verbose);
+            //
+            // General case - write a single output file that contains
+            // all of the environment map image.
+            //
+
+            if (levelMode == ONE_LEVEL)
+            {
+                if (pixelType == ENVMAP_FLOAT) {
+                    // Create an OutputFile to directly write float pixels
+                    Header outputHeader = header;
+                    outputHeader.channels() = IMF::ChannelList();
+                    outputHeader.channels().insert("R", IMF::Channel(IMF::FLOAT));
+                    outputHeader.channels().insert("G", IMF::Channel(IMF::FLOAT));
+                    outputHeader.channels().insert("B", IMF::Channel(IMF::FLOAT));
+                    outputHeader.channels().insert("A", IMF::Channel(IMF::FLOAT));
+                    
+                    IMF::OutputFile out(outFile, outputHeader);
+                    
+                    // Convert Rgba pixels to separate float channels
+                    IMF::FrameBuffer frameBuffer;
+                    
+                    // Allocate temporary buffers for the float data
+                    Array2D<float> rBuffer(w, h);
+                    Array2D<float> gBuffer(w, h);
+                    Array2D<float> bBuffer(w, h);
+                    Array2D<float> aBuffer(w, h);
+                    
+                    float maxValueFound = 0.0f;
+                    int extremeValueCount = 0;
+
+                    for (int y = 0; y < h; ++y) {
+                        for (int x = 0; x < w; ++x) {
+                            const Rgba& p = converted.pixels()[y][x];
+                            // Convert to float and check for extreme values
+                            float r = convertRgbaValueToFloat(float(p.r), &maxValueFound, &extremeValueCount);
+                            float g = convertRgbaValueToFloat(float(p.g), &maxValueFound, &extremeValueCount);
+                            float b = convertRgbaValueToFloat(float(p.b), &maxValueFound, &extremeValueCount);
+                            float a = float(p.a);
+                            
+                            // Alpha is handled separately since it's only 0-1 range
+                            if (a != a || !std::isfinite(a) || a > 1.0f) a = 1.0f;
+                            if (a < 0.0f) a = 0.0f;
+                            
+                            rBuffer[y][x] = r;
+                            gBuffer[y][x] = g;
+                            bBuffer[y][x] = b;
+                            aBuffer[y][x] = a;
+                        }
+                    }
+                    
+                    // After conversion is complete, report any issues found
+                    reportExtremeValues(extremeValueCount, maxValueFound, verbose);
+                    
+                    // Set up the framebuffer accounting for the data window
+                    frameBuffer.insert("R", Slice(IMF::FLOAT, 
+                        (char*)&rBuffer[0][0] - dw.min.y * w * sizeof(float) - dw.min.x * sizeof(float),
+                        sizeof(float), w * sizeof(float)));
+                    frameBuffer.insert("G", Slice(IMF::FLOAT, 
+                        (char*)&gBuffer[0][0] - dw.min.y * w * sizeof(float) - dw.min.x * sizeof(float),
+                        sizeof(float), w * sizeof(float)));
+                    frameBuffer.insert("B", Slice(IMF::FLOAT, 
+                        (char*)&bBuffer[0][0] - dw.min.y * w * sizeof(float) - dw.min.x * sizeof(float),
+                        sizeof(float), w * sizeof(float)));
+                    frameBuffer.insert("A", Slice(IMF::FLOAT, 
+                        (char*)&aBuffer[0][0] - dw.min.y * w * sizeof(float) - dw.min.x * sizeof(float),
+                        sizeof(float), w * sizeof(float)));
+                    
+                    out.setFrameBuffer(frameBuffer);
+                    out.writePixels(h);
+                } else {
+                    IMF::RgbaOutputFile out(outFile, header, channels);
+                    out.setFrameBuffer(&converted.pixels()[0][0] - dw.min.y * w - dw.min.x, 1, w);
+                    out.writePixels(h);
+                }
+            }
+            else
+            {
+                if (pixelType == ENVMAP_FLOAT) {
+                    // Create a tiled OutputFile to directly write float pixels
+                    Header tiledHeader = header;
+                    tiledHeader.channels() = IMF::ChannelList();
+                    tiledHeader.channels().insert("R", IMF::Channel(IMF::FLOAT));
+                    tiledHeader.channels().insert("G", IMF::Channel(IMF::FLOAT));
+                    tiledHeader.channels().insert("B", IMF::Channel(IMF::FLOAT));
+                    tiledHeader.channels().insert("A", IMF::Channel(IMF::FLOAT));
+                    
+                    // Set up the tiled header
+                    tiledHeader.setTileDescription(TileDescription(tileWidth, tileHeight, levelMode, roundingMode));
+                    
+                    IMF::TiledOutputFile out(outFile, tiledHeader);
+                    
+                    // Process each level
+                    for (int ly = 0; ly < out.numYLevels(); ++ly)
+                    {
+                        for (int lx = 0; lx < out.numXLevels(); ++lx)
+                        {
+                            IMATH::Box2i dw2 = out.dataWindowForLevel(lx, ly);
+                            int w2 = dw2.max.x - dw2.min.x + 1;
+                            int h2 = dw2.max.y - dw2.min.y + 1;
+
+                            EnvmapImage level;
+                            level.resize(converted.type(), dw2, pixelType);
+                            resampleImage(converted, level, lx + ly);
+                            
+                            // Allocate temporary buffers for the float data
+                            Array2D<float> rBuffer(w2, h2);
+                            Array2D<float> gBuffer(w2, h2);
+                            Array2D<float> bBuffer(w2, h2);
+                            Array2D<float> aBuffer(w2, h2);
+                            
+                            float maxValueFound = 0.0f;
+                            int extremeValueCount = 0;
+
+                            for (int y = 0; y < h2; ++y) {
+                                for (int x = 0; x < w2; ++x) {
+                                    const Rgba& p = level.pixels()[y][x];
+                                    // Convert to float and check for extreme values
+                                    float r = convertRgbaValueToFloat(float(p.r), &maxValueFound, &extremeValueCount);
+                                    float g = convertRgbaValueToFloat(float(p.g), &maxValueFound, &extremeValueCount);
+                                    float b = convertRgbaValueToFloat(float(p.b), &maxValueFound, &extremeValueCount);
+                                    float a = float(p.a);
+                                    
+                                    // Alpha is handled separately since it's only 0-1 range
+                                    if (a != a || !std::isfinite(a) || a > 1.0f) a = 1.0f;
+                                    if (a < 0.0f) a = 0.0f;
+                                    
+                                    rBuffer[y][x] = r;
+                                    gBuffer[y][x] = g;
+                                    bBuffer[y][x] = b;
+                                    aBuffer[y][x] = a;
+                                }
+                            }
+                            
+                            // After conversion is complete, report any issues found
+                            reportExtremeValues(extremeValueCount, maxValueFound, verbose);
+                            
+                            // Set up the framebuffer accounting for the data window
+                            IMF::FrameBuffer frameBuffer;
+                            frameBuffer.insert("R", Slice(IMF::FLOAT, 
+                                (char*)&rBuffer[0][0] - dw2.min.y * w2 * sizeof(float) - dw2.min.x * sizeof(float),
+                                sizeof(float), w2 * sizeof(float), 1, 1, 0.0));
+                            frameBuffer.insert("G", Slice(IMF::FLOAT, 
+                                (char*)&gBuffer[0][0] - dw2.min.y * w2 * sizeof(float) - dw2.min.x * sizeof(float),
+                                sizeof(float), w2 * sizeof(float), 1, 1, 0.0));
+                            frameBuffer.insert("B", Slice(IMF::FLOAT, 
+                                (char*)&bBuffer[0][0] - dw2.min.y * w2 * sizeof(float) - dw2.min.x * sizeof(float),
+                                sizeof(float), w2 * sizeof(float), 1, 1, 0.0));
+                            frameBuffer.insert("A", Slice(IMF::FLOAT, 
+                                (char*)&aBuffer[0][0] - dw2.min.y * w2 * sizeof(float) - dw2.min.x * sizeof(float),
+                                sizeof(float), w2 * sizeof(float), 1, 1, 1.0));
+                            
+                            out.setFrameBuffer(frameBuffer);
+                            out.writeTiles(0, out.numXTiles(lx) - 1, 0, out.numYTiles(ly) - 1, lx, ly);
+                        }
+                    }
+                } else {
+                    IMF::TiledRgbaOutputFile out(
+                        outFile,
+                        header,
+                        channels,
+                        tileWidth,
+                        tileHeight,
+                        levelMode,
+                        roundingMode);
+                    
+                    for (int ly = 0; ly < out.numYLevels(); ++ly)
+                    {
+                        for (int lx = 0; lx < out.numXLevels(); ++lx)
+                        {
+                            IMATH::Box2i dw2 = out.dataWindowForLevel(lx, ly);
+                            int w2 = dw2.max.x - dw2.min.x + 1;
+                            int h2 = dw2.max.y - dw2.min.y + 1;
+
+                            EnvmapImage level;
+
+                            level.resize(converted.type(), dw2, pixelType);
+
+                            resampleImage(converted, level, lx + ly);
+
+                            out.setFrameBuffer(&level.pixels()[0][0] - dw2.min.y * w2 - dw2.min.x, 1, w2);
+                            out.writeTiles(0, out.numXTiles(lx) - 1, 0, out.numYTiles(ly) - 1, lx, ly);
+                        }
+                    }
+                }
+            }
         }
     }
-    catch (const exception& e)
+    catch (const exception &e)
     {
-        cerr << argv[0] << ": " << e.what () << endl;
+        cerr << argv[0] << ": " << e.what() << endl;
         return 1;
     }
 

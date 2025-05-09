@@ -35,30 +35,30 @@ namespace
 {
 
 void
-insertChannels (Header& header, RgbaChannels rgbaChannels)
+insertChannels (Header& header, RgbaChannels rgbaChannels, PixelType pixelType = HALF)
 {
     ChannelList ch;
 
     if (rgbaChannels & (WRITE_Y | WRITE_C))
     {
-        if (rgbaChannels & WRITE_Y) { ch.insert ("Y", Channel (HALF, 1, 1)); }
+        if (rgbaChannels & WRITE_Y) { ch.insert ("Y", Channel (pixelType, 1, 1)); }
 
         if (rgbaChannels & WRITE_C)
         {
-            ch.insert ("RY", Channel (HALF, 2, 2, true));
-            ch.insert ("BY", Channel (HALF, 2, 2, true));
+            ch.insert ("RY", Channel (pixelType, 2, 2, true));
+            ch.insert ("BY", Channel (pixelType, 2, 2, true));
         }
     }
     else
     {
-        if (rgbaChannels & WRITE_R) ch.insert ("R", Channel (HALF, 1, 1));
+        if (rgbaChannels & WRITE_R) ch.insert ("R", Channel (pixelType, 1, 1));
 
-        if (rgbaChannels & WRITE_G) ch.insert ("G", Channel (HALF, 1, 1));
+        if (rgbaChannels & WRITE_G) ch.insert ("G", Channel (pixelType, 1, 1));
 
-        if (rgbaChannels & WRITE_B) ch.insert ("B", Channel (HALF, 1, 1));
+        if (rgbaChannels & WRITE_B) ch.insert ("B", Channel (pixelType, 1, 1));
     }
 
-    if (rgbaChannels & WRITE_A) ch.insert ("A", Channel (HALF, 1, 1));
+    if (rgbaChannels & WRITE_A) ch.insert ("A", Channel (pixelType, 1, 1));
 
     header.channels () = ch;
 }
@@ -523,6 +523,22 @@ RgbaOutputFile::RgbaOutputFile (
 }
 
 RgbaOutputFile::RgbaOutputFile (
+    const char    name[],
+    const Header& header,
+    RgbaChannels  rgbaChannels,
+    int           numThreads,
+    PixelType     pixelType)
+    : _outputFile (0), _toYca (0)
+{
+    Header hd (header);
+    insertChannels (hd, rgbaChannels, pixelType);
+    _outputFile = new OutputFile (name, hd, numThreads);
+
+    if (rgbaChannels & (WRITE_Y | WRITE_C))
+        _toYca = new ToYca (*_outputFile, rgbaChannels);
+}
+
+RgbaOutputFile::RgbaOutputFile (
     OPENEXR_IMF_INTERNAL_NAMESPACE::OStream& os,
     const Header&                            header,
     RgbaChannels                             rgbaChannels,
@@ -531,6 +547,22 @@ RgbaOutputFile::RgbaOutputFile (
 {
     Header hd (header);
     insertChannels (hd, rgbaChannels);
+    _outputFile = new OutputFile (os, hd, numThreads);
+
+    if (rgbaChannels & (WRITE_Y | WRITE_C))
+        _toYca = new ToYca (*_outputFile, rgbaChannels);
+}
+
+RgbaOutputFile::RgbaOutputFile (
+    OPENEXR_IMF_INTERNAL_NAMESPACE::OStream& os,
+    const Header&                            header,
+    RgbaChannels                             rgbaChannels,
+    int                                      numThreads,
+    PixelType                                pixelType)
+    : _outputFile (0), _toYca (0)
+{
+    Header hd (header);
+    insertChannels (hd, rgbaChannels, pixelType);
     _outputFile = new OutputFile (os, hd, numThreads);
 
     if (rgbaChannels & (WRITE_Y | WRITE_C))

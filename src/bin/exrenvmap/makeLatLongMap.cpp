@@ -100,3 +100,18 @@ makeLatLongMap (
 
     if (verbose) cout << "done." << endl;
 }
+
+void
+makeLatLongMap (
+    const EnvmapImage&     inputImage,
+    EnvmapImage&           outputImage,
+    float                  filterRadius,
+    int                    numSamples,
+    bool                   verbose)
+{
+    if (verbose)
+        cout << "converting cube-face map to latitude-longitude map" << endl;
+    
+    // Use the existing resizeLatLong function to do the actual conversion
+    resizeLatLong(inputImage, outputImage, outputImage.dataWindow(), filterRadius, numSamples);
+}

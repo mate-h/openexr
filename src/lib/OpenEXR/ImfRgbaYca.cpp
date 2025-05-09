@@ -268,6 +268,10 @@ YCAtoRGBA (
         const Rgba& in  = ycaIn[i];
         Rgba&       out = rgbaOut[i];
 
+        // Ensure input Y (luminance) is valid and non-negative
+        float Y = float(in.g);
+        if (!std::isfinite(Y) || Y < 0) Y = 0.0f;
+        
         if (in.r == 0 && in.b == 0)
         {
             //
@@ -280,18 +284,51 @@ YCAtoRGBA (
             // back is lossless.
             //
 
-            out.r = in.g;
-            out.g = in.g;
-            out.b = in.g;
+            out.r = Y;
+            out.g = Y;
+            out.b = Y;
             out.a = in.a;
         }
         else
         {
-            float Y = in.g;
-            float r = (in.r + 1) * Y;
-            float b = (in.b + 1) * Y;
-            float g = (Y - r * yw.x - b * yw.z) / yw.y;
+            // Ensure chroma values are finite
+            float r_chroma = float(in.r);
+            float b_chroma = float(in.b);
+            
+            if (!std::isfinite(r_chroma)) r_chroma = 0.0f;
+            if (!std::isfinite(b_chroma)) b_chroma = 0.0f;
 
+            // Calculate RGB values
+            float r = (r_chroma + 1) * Y;
+            float b = (b_chroma + 1) * Y;
+            float g = (Y - r * yw.x - b * yw.z) / yw.y;
+            
+            // Check for negative green channel (can happen with extreme values)
+            if (g < 0.0f)
+            {
+                // Re-normalize keeping luminance proportional
+                float sum = r + b;
+                if (sum > 0.0f)
+                {
+                    float scale = Y / sum;
+                    r *= scale;
+                    b *= scale;
+                    g = 0.0f;
+                }
+                else
+                {
+                    r = Y;
+                    g = Y;
+                    b = Y;
+                }
+            }
+            
+            // Final sanity check for all channels
+            if (!std::isfinite(r) || r < 0.0f) r = 0.0f;
+            if (!std::isfinite(g) || g < 0.0f) g = 0.0f;
+            if (!std::isfinite(b) || b < 0.0f) b = 0.0f;
+            
+            // Set output channels
             out.r = r;
             out.g = g;
             out.b = b;

@@ -20,6 +20,7 @@
 #include <iostream>
 #include <string.h>
 #include <string>
+#include <cmath>  // For std::isfinite
 
 #include "namespaceAlias.h"
 using namespace IMF;
@@ -30,6 +31,93 @@ namespace
 {
 
 void
+sanitizePixelValues(Array2D<Rgba>& pixels, const Box2i& dataWindow, bool verbose = false)
+{
+    int w = dataWindow.max.x - dataWindow.min.x + 1;
+    int h = dataWindow.max.y - dataWindow.min.y + 1;
+
+    // Keep track of statistics for feedback
+    int numNaNs = 0;
+    int numInfs = 0;
+    int numExtremePos = 0;
+    int numExtremeNeg = 0;
+    float maxValue = 0;
+    
+    // Maximum representable value without causing artifacts
+    const float safeMaxValue = 1.0e30f;
+    
+    // Threshold for "extreme" values worth counting
+    const float extremeThreshold = 1.0e15f;
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            Rgba& p = pixels[y][x];
+            
+            // Convert to float for checking
+            float r = float(p.r);
+            float g = float(p.g);
+            float b = float(p.b);
+            float a = float(p.a);
+            
+            // Check for NaN values
+            bool rNaN = r != r;
+            bool gNaN = g != g;
+            bool bNaN = b != b;
+            bool aNaN = a != a;
+            
+            if (rNaN || gNaN || bNaN || aNaN) numNaNs++;
+            
+            // Check for infinity
+            bool rInf = std::isinf(r);
+            bool gInf = std::isinf(g);
+            bool bInf = std::isinf(b);
+            bool aInf = std::isinf(a);
+            
+            if (rInf || gInf || bInf || aInf) numInfs++;
+            
+            // Track max value for reporting
+            maxValue = std::max(maxValue, std::max(std::max(r, g), b));
+            
+            // Count extreme values
+            if (r > extremeThreshold || g > extremeThreshold || b > extremeThreshold)
+                numExtremePos++;
+            
+            if (r < -extremeThreshold || g < -extremeThreshold || b < -extremeThreshold)
+                numExtremeNeg++;
+            
+            // Apply sanitization
+            if (rNaN || !std::isfinite(r) || r > safeMaxValue) 
+                p.r = (r < 0) ? 0 : safeMaxValue;
+            
+            if (gNaN || !std::isfinite(g) || g > safeMaxValue) 
+                p.g = (g < 0) ? 0 : safeMaxValue;
+            
+            if (bNaN || !std::isfinite(b) || b > safeMaxValue) 
+                p.b = (b < 0) ? 0 : safeMaxValue;
+            
+            if (aNaN || !std::isfinite(a) || a > 1.0f) 
+                p.a = 1.0f;
+            
+            if (a < 0.0f) 
+                p.a = 0.0f;
+        }
+    }
+    
+    // Report statistics if interesting
+    if (verbose && (numNaNs > 0 || numInfs > 0 || numExtremePos > 0 || numExtremeNeg > 0))
+    {
+        std::cout << "Image sanitization statistics:" << std::endl;
+        std::cout << "  - NaN values found: " << numNaNs << std::endl;
+        std::cout << "  - Infinity values found: " << numInfs << std::endl;
+        std::cout << "  - Extreme positive values (>" << extremeThreshold << "): " << numExtremePos << std::endl;
+        std::cout << "  - Extreme negative values (<-" << extremeThreshold << "): " << numExtremeNeg << std::endl;
+        std::cout << "  - Maximum value found: " << maxValue << std::endl;
+    }
+}
+
+void
 readSingleImage (
     const char    inFileName[],
     float         padTop,
@@ -38,7 +126,8 @@ readSingleImage (
     bool          verbose,
     EnvmapImage&  image,
     Header&       header,
-    RgbaChannels& channels)
+    RgbaChannels& channels,
+    EnvmapPixelType pixelType)
 {
     //
     // Read the input image, and if necessary,
@@ -87,11 +176,15 @@ readSingleImage (
     Box2i paddedDw (
         V2i (dw.min.x, dw.min.y - pt), V2i (dw.max.x, dw.max.y + pb));
 
-    image.resize (type, paddedDw);
+    image.resize (type, paddedDw, pixelType);
     Array2D<Rgba>& pixels = image.pixels ();
 
     in.setFrameBuffer (&pixels[-paddedDw.min.y][-paddedDw.min.x], 1, w);
     in.readPixels (dw.min.y, dw.max.y);
+
+    // Clean up extreme values in the image immediately after reading
+    if (verbose) cout << "cleaning up extreme pixel values" << endl;
+    sanitizePixelValues(pixels, paddedDw, verbose);
 
     for (int y = 0; y < pt; ++y)
         for (int x = 0; x < w; ++x)
@@ -110,7 +203,8 @@ readSixImages (
     bool          verbose,
     EnvmapImage&  image,
     Header&       header,
-    RgbaChannels& channels)
+    RgbaChannels& channels,
+    EnvmapPixelType pixelType)
 {
     //
     // Generate six file names by replacing the first '%' character in
@@ -150,7 +244,7 @@ readSixImages (
 
     const Box2i imageDw (V2i (0, 0), V2i (w - 1, 6 * h - 1));
 
-    image.resize (ENVMAP_CUBE, imageDw);
+    image.resize (ENVMAP_CUBE, imageDw, pixelType);
     Rgba* pixels = &(image.pixels ()[0][0]);
 
     for (int i = 0; i < 6; ++i)
@@ -173,6 +267,11 @@ readSixImages (
 
         in.setFrameBuffer (ComputeBasePointer (pixels, dw), 1, w);
         in.readPixels (dw.min.y, dw.max.y);
+        
+        // Clean up extreme values for each face
+        if (verbose) cout << "cleaning up extreme pixel values in face " << i << endl;
+        Box2i faceDw(V2i(0, i*h), V2i(w-1, (i+1)*h-1));
+        sanitizePixelValues(image.pixels(), faceDw, verbose);
 
         pixels += w * h;
     }
@@ -189,11 +288,12 @@ readInputImage (
     bool          verbose,
     EnvmapImage&  image,
     Header&       header,
-    RgbaChannels& channels)
+    RgbaChannels& channels,
+    EnvmapPixelType pixelType)
 {
     if (strchr (inFileName, '%'))
     {
-        readSixImages (inFileName, verbose, image, header, channels);
+        readSixImages (inFileName, verbose, image, header, channels, pixelType);
     }
     else
     {
@@ -205,6 +305,7 @@ readInputImage (
             verbose,
             image,
             header,
-            channels);
+            channels,
+            pixelType);
     }
 }

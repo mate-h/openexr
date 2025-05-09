@@ -213,3 +213,18 @@ makeCubeMap (
             verbose);
     }
 }
+
+void
+makeCubeMap (
+    const EnvmapImage&     inputImage,
+    EnvmapImage&           outputImage,
+    float                  filterRadius,
+    int                    numSamples,
+    bool                   verbose)
+{
+    if (verbose)
+        cout << "converting latitude-longitude map to cube-face map" << endl;
+    
+    // Use the existing resizeCube function to do the actual conversion
+    resizeCube(inputImage, outputImage, outputImage.dataWindow(), filterRadius, numSamples);
+}

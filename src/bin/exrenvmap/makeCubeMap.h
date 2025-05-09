@@ -33,4 +33,12 @@ void makeCubeMap (
     int                    numSamples,
     bool                   verbose);
 
+// New overload for direct conversion between EnvmapImage objects
+void makeCubeMap (
+    const EnvmapImage&     inputImage,
+    EnvmapImage&           outputImage,
+    float                  filterRadius,
+    int                    numSamples,
+    bool                   verbose);
+
 #endif

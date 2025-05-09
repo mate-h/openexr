@@ -16,10 +16,9 @@
 #include <ImfEnvmap.h>
 #include <ImfForward.h>
 #include <ImfRgba.h>
+#include <EnvmapImage.h>
 
 #include "namespaceAlias.h"
-
-class EnvmapImage;
 
 void readInputImage (
     const char         inFileName[],
@@ -29,6 +28,7 @@ void readInputImage (
     bool               verbose,
     EnvmapImage&       image,
     IMF::Header&       header,
-    IMF::RgbaChannels& channels);
+    IMF::RgbaChannels& channels,
+    EnvmapPixelType    pixelType);
 
 #endif

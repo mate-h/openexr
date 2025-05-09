@@ -24,6 +24,16 @@ using namespace IMF;
 using namespace std;
 using namespace IMATH;
 
+namespace {
+// Add a helper function to sanitize pixel values
+inline float sanitizeValue(float x, float maxValue = 1.0e30f) {
+    if (x != x || !std::isfinite(x)) return 0.0f; // Handle NaN and infinities
+    if (x > maxValue) return maxValue;            // Clamp very high values
+    if (x < -maxValue) return -maxValue;          // Clamp very low values
+    return x;
+}
+} // namespace
+
 inline int
 toInt (float x)
 {
@@ -247,10 +257,22 @@ blurImage (EnvmapImage& image1, bool verbose)
 
                     Rgba& pixel = pixels[toInt (pos.y)][toInt (pos.x)];
 
-                    pixel.r *= weight;
-                    pixel.g *= weight;
-                    pixel.b *= weight;
-                    pixel.a *= weight;
+                    // Apply weight
+                    float r = float(pixel.r) * weight;
+                    float g = float(pixel.g) * weight;
+                    float b = float(pixel.b) * weight;
+                    float a = float(pixel.a) * weight;
+                    
+                    // Check for NaN or extreme values
+                    r = sanitizeValue(r);
+                    g = sanitizeValue(g);
+                    b = sanitizeValue(b);
+                    a = sanitizeValue(a, 1.0f);
+                    
+                    pixel.r = r;
+                    pixel.g = g;
+                    pixel.b = b;
+                    pixel.a = a;
 
                     weightTotal += weight;
                 }
@@ -343,19 +365,41 @@ blurImage (EnvmapImage& image1, bool verbose)
                                 Rgba& pixel1 =
                                     pixels1[toInt (pos1.y)][toInt (pos1.x)];
 
+                                // Get float values and sanitize
+                                float r1 = sanitizeValue(float(pixel1.r));
+                                float g1 = sanitizeValue(float(pixel1.g));
+                                float b1 = sanitizeValue(float(pixel1.b));
+                                float a1 = sanitizeValue(float(pixel1.a), 1.0f);
+
                                 weightTotal += weight;
-                                rTotal += pixel1.r * weight;
-                                gTotal += pixel1.g * weight;
-                                bTotal += pixel1.b * weight;
-                                aTotal += pixel1.a * weight;
+                                rTotal += r1 * weight;
+                                gTotal += g1 * weight;
+                                bTotal += b1 * weight;
+                                aTotal += a1 * weight;
                             }
                         }
                     }
 
-                    pixel2.r = rTotal / weightTotal;
-                    pixel2.g = gTotal / weightTotal;
-                    pixel2.b = bTotal / weightTotal;
-                    pixel2.a = aTotal / weightTotal;
+                    // Before setting the final values, check for NaN/extreme values
+                    if (rTotal != rTotal || rTotal > 1.0e30 || rTotal < -1.0e30) rTotal = 0;
+                    if (gTotal != gTotal || gTotal > 1.0e30 || gTotal < -1.0e30) gTotal = 0;
+                    if (bTotal != bTotal || bTotal > 1.0e30 || bTotal < -1.0e30) bTotal = 0;
+                    if (aTotal != aTotal || aTotal > 1.0e30 || aTotal < -1.0e30) aTotal = 0;
+                    
+                    if (weightTotal > 0)
+                    {
+                        pixel2.r = rTotal / weightTotal;
+                        pixel2.g = gTotal / weightTotal;
+                        pixel2.b = bTotal / weightTotal;
+                        pixel2.a = aTotal / weightTotal;
+                    }
+                    else
+                    {
+                        pixel2.r = 0;
+                        pixel2.g = 0;
+                        pixel2.b = 0;
+                        pixel2.a = 0;
+                    }
                 }
             }
         }

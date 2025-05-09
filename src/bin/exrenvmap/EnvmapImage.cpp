@@ -18,14 +18,16 @@ using namespace IMATH;
 
 EnvmapImage::EnvmapImage ()
     : _type (ENVMAP_LATLONG)
+    , _pixelType (ENVMAP_HALF)
     , _dataWindow (V2i (0, 0), V2i (0, 0))
     , _pixels (1, 1)
 {
     clear ();
 }
 
-EnvmapImage::EnvmapImage (Envmap type, const Box2i& dataWindow)
+EnvmapImage::EnvmapImage (Envmap type, const Box2i& dataWindow, EnvmapPixelType pixelType)
     : _type (type)
+    , _pixelType (pixelType)
     , _dataWindow (dataWindow)
     , _pixels (
           dataWindow.max.y - dataWindow.min.y + 1,
@@ -35,12 +37,13 @@ EnvmapImage::EnvmapImage (Envmap type, const Box2i& dataWindow)
 }
 
 void
-EnvmapImage::resize (Envmap type, const Box2i& dataWindow)
+EnvmapImage::resize (Envmap type, const Box2i& dataWindow, EnvmapPixelType pixelType)
 {
     _pixels.resizeEraseUnsafe (
         dataWindow.max.y - dataWindow.min.y + 1,
         dataWindow.max.x - dataWindow.min.x + 1);
     _type       = type;
+    _pixelType  = pixelType;
     _dataWindow = dataWindow;
 
     clear ();
@@ -70,6 +73,12 @@ Envmap
 EnvmapImage::type () const
 {
     return _type;
+}
+
+EnvmapPixelType
+EnvmapImage::pixelType () const
+{
+    return _pixelType;
 }
 
 const Box2i&
@@ -176,10 +185,22 @@ EnvmapImage::filteredLookup (V3f d, float r, int n) const
             float w = wx * wy;
             wt += w;
 
-            cr += s.r * w;
-            cg += s.g * w;
-            cb += s.b * w;
-            ca += s.a * w;
+            // Check for NaN or extreme values before accumulating
+            float r = float(s.r);
+            float g = float(s.g);
+            float b = float(s.b);
+            float a = float(s.a);
+            
+            // Replace problematic values with a large but finite value
+            if (r != r || r > 1.0e30f || r < -1.0e30f) r = 1.0e30f;
+            if (g != g || g > 1.0e30f || g < -1.0e30f) g = 1.0e30f;
+            if (b != b || b > 1.0e30f || b < -1.0e30f) b = 1.0e30f;
+            if (a != a || a > 1.0f || a < 0.0f) a = 1.0f;
+
+            cr += r * w;
+            cg += g * w;
+            cb += b * w;
+            ca += a * w;
         }
     }
 
@@ -224,11 +245,72 @@ EnvmapImage::sample (const V2f& pos) const
     Rgba p21 = _pixels[y2][x1];
     Rgba p22 = _pixels[y2][x2];
 
+    // Check and clean input values before interpolation to avoid introducing artifacts
+    const float maxValue = 1.0e30f;
+    
+    // Clean p11
+    float r11 = float(p11.r);
+    float g11 = float(p11.g);
+    float b11 = float(p11.b);
+    float a11 = float(p11.a);
+    if (r11 != r11 || !std::isfinite(r11) || r11 > maxValue) r11 = maxValue;
+    if (g11 != g11 || !std::isfinite(g11) || g11 > maxValue) g11 = maxValue;
+    if (b11 != b11 || !std::isfinite(b11) || b11 > maxValue) b11 = maxValue;
+    if (a11 != a11 || !std::isfinite(a11) || a11 > 1.0f) a11 = 1.0f;
+    if (a11 < 0.0f) a11 = 0.0f;
+    
+    // Clean p12
+    float r12 = float(p12.r);
+    float g12 = float(p12.g);
+    float b12 = float(p12.b);
+    float a12 = float(p12.a);
+    if (r12 != r12 || !std::isfinite(r12) || r12 > maxValue) r12 = maxValue;
+    if (g12 != g12 || !std::isfinite(g12) || g12 > maxValue) g12 = maxValue;
+    if (b12 != b12 || !std::isfinite(b12) || b12 > maxValue) b12 = maxValue;
+    if (a12 != a12 || !std::isfinite(a12) || a12 > 1.0f) a12 = 1.0f;
+    if (a12 < 0.0f) a12 = 0.0f;
+    
+    // Clean p21
+    float r21 = float(p21.r);
+    float g21 = float(p21.g);
+    float b21 = float(p21.b);
+    float a21 = float(p21.a);
+    if (r21 != r21 || !std::isfinite(r21) || r21 > maxValue) r21 = maxValue;
+    if (g21 != g21 || !std::isfinite(g21) || g21 > maxValue) g21 = maxValue;
+    if (b21 != b21 || !std::isfinite(b21) || b21 > maxValue) b21 = maxValue;
+    if (a21 != a21 || !std::isfinite(a21) || a21 > 1.0f) a21 = 1.0f;
+    if (a21 < 0.0f) a21 = 0.0f;
+    
+    // Clean p22
+    float r22 = float(p22.r);
+    float g22 = float(p22.g);
+    float b22 = float(p22.b);
+    float a22 = float(p22.a);
+    if (r22 != r22 || !std::isfinite(r22) || r22 > maxValue) r22 = maxValue;
+    if (g22 != g22 || !std::isfinite(g22) || g22 > maxValue) g22 = maxValue;
+    if (b22 != b22 || !std::isfinite(b22) || b22 > maxValue) b22 = maxValue;
+    if (a22 != a22 || !std::isfinite(a22) || a22 > 1.0f) a22 = 1.0f;
+    if (a22 < 0.0f) a22 = 0.0f;
+
+    // Perform bilinear interpolation using the cleaned values
     Rgba p;
-    p.r = (p11.r * sx + p12.r * tx) * sy + (p21.r * sx + p22.r * tx) * ty;
-    p.g = (p11.g * sx + p12.g * tx) * sy + (p21.g * sx + p22.g * tx) * ty;
-    p.b = (p11.b * sx + p12.b * tx) * sy + (p21.b * sx + p22.b * tx) * ty;
-    p.a = (p11.a * sx + p12.a * tx) * sy + (p21.a * sx + p22.a * tx) * ty;
+    p.r = (r11 * sx + r12 * tx) * sy + (r21 * sx + r22 * tx) * ty;
+    p.g = (g11 * sx + g12 * tx) * sy + (g21 * sx + g22 * tx) * ty;
+    p.b = (b11 * sx + b12 * tx) * sy + (b21 * sx + b22 * tx) * ty;
+    p.a = (a11 * sx + a12 * tx) * sy + (a21 * sx + a22 * tx) * ty;
+
+    // Final validation check on the result
+    float r = float(p.r);
+    float g = float(p.g);
+    float b = float(p.b);
+    float a = float(p.a);
+    
+    // Replace problematic values with a large but finite value
+    if (r != r || !std::isfinite(r) || r > maxValue) p.r = maxValue;
+    if (g != g || !std::isfinite(g) || g > maxValue) p.g = maxValue;
+    if (b != b || !std::isfinite(b) || b > maxValue) p.b = maxValue;
+    if (a != a || !std::isfinite(a) || a > 1.0f) p.a = 1.0f;
+    if (a < 0.0f) p.a = 0.0f;
 
     return p;
 }

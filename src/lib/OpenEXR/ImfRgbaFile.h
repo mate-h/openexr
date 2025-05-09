@@ -108,6 +108,18 @@ public:
         RgbaChannels  rgbaChannels = WRITE_RGBA,
         int           numThreads   = globalThreadCount ());
 
+    //---------------------------------------------------
+    // Constructor with pixel type -- header is constructed by the caller
+    //---------------------------------------------------
+
+    IMF_EXPORT
+    RgbaOutputFile (
+        const char    name[],
+        const Header& header,
+        RgbaChannels  rgbaChannels,
+        int           numThreads,
+        PixelType     pixelType);
+
     //----------------------------------------------------
     // Constructor -- header is constructed by the caller,
     // file is opened by the caller, destructor will not
@@ -120,6 +132,20 @@ public:
         const Header&                            header,
         RgbaChannels                             rgbaChannels = WRITE_RGBA,
         int numThreads = globalThreadCount ());
+
+    //----------------------------------------------------
+    // Constructor with pixel type -- header is constructed by the caller,
+    // file is opened by the caller, destructor will not
+    // automatically close the file.
+    //----------------------------------------------------
+
+    IMF_EXPORT
+    RgbaOutputFile (
+        OPENEXR_IMF_INTERNAL_NAMESPACE::OStream& os,
+        const Header&                            header,
+        RgbaChannels                             rgbaChannels,
+        int numThreads,
+        PixelType pixelType);
 
     //----------------------------------------------------------------
     // Constructor -- header data are explicitly specified as function
